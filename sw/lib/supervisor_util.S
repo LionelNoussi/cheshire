@@ -5,13 +5,11 @@ enter_smode:
     // Set mstatus MPP to 01
     csrr	a5, mstatus
 
-    lui	    a3, 0xffffe
-    add     a3, a3, 0x7ff # ffffffffffffe7ff
+    li      a3, ~(3 << 11)
     and	    a5, a5, a3
 
-    lui	    a4, 1
-    add     a4, a4, -2048
-    or	    a5, a5, a4
+    li      a3, (1 << 11)
+    or	    a5, a5, a3
 
     csrw	mstatus, a5
 
@@ -20,8 +18,8 @@ enter_smode:
     csrw	mepc, a5
 
     // Delegate specific interrupts/exceptions to S-Mode
-    li	    a5, 256
-    csrw	medeleg,a5
+    li	    a5, (1 << 10) // U-Mode Ecall
+    csrw	medeleg, a5
     csrw	mideleg, x0
 
     // Save frame in stack and save sp in mscratch
@@ -78,11 +76,8 @@ exit_smode:
     // Set mstatus MPP to 11 machine mode
     csrr	a5, mstatus
 
-    li	    a3, 0xffffe7ff
-    and	    a5, a5, a3
-
-    li      a4, (3 << 11)
-    or      a5, a5, a4
+    li      a3, (3 << 11)
+    or      a5, a5, a3
 
     csrw	mstatus, a5
 

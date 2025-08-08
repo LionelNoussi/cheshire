@@ -45,7 +45,7 @@ static uint64_t l0_page_table_periph[NUM_PT_ENTRIES] __attribute__((aligned(PAGE
 void setup_page_table(void) {
     uint64_t va, pa, addr, vpn0, vpn1, vpn2;
     
-    // Map 64KB for SPM
+    // Map 128KB for SPM
     uint64_t spm_base = 0x10000000UL;
     uint32_t spm_size = 0x20000;
 
@@ -104,11 +104,11 @@ void turn_on_mmu(void) {
 
 
 #define SYSCALL_SMODE_EXIT 0x3
-#define SYSCALL(syscall_id)                             \
-    ({                                                  \
-        register uint64_t a7 asm("a7") = syscall_id;    \
-        asm volatile ("ecall" :: "r"(a7) : "memory");   \
-    })
+
+#define SYSCALL(syscall_id) do { \
+    register uint64_t a7 asm("a7") = syscall_id;    \
+    asm volatile ("ecall" :: "r"(a7) : "memory");   \
+} while (0)
 
 
 // Machine trap vector
@@ -170,7 +170,6 @@ int main(void) {
     uint64_t reset_freq = clint_get_core_freq(rtc_freq, 2500);
     uart_init(&__base_uart, reset_freq, __BOOT_BAUDRATE);
 
-    
     // Setup DTLB filtering config
     SET_DTLB_MISS_FILTER(0x10008000, 0x5000);   // Addr base and size
     
