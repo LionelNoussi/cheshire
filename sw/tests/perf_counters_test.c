@@ -5,7 +5,11 @@
 #include "util.h"
 #include "printf.h"
 
+
+// DEFINED IN `sw/lib/supervisor_util.S`
+// Calls supervisor_main in superviosr mode
 extern void enter_smode(void);
+// Used to return from supervisor mode, to the point of entry
 extern void exit_smode(void);
 
 
@@ -37,13 +41,13 @@ static uint64_t l0_page_table_spm[NUM_PT_ENTRIES] __attribute__((aligned(PAGE_SI
 static uint64_t l0_page_table_periph[NUM_PT_ENTRIES] __attribute__((aligned(PAGE_SIZE)));
 
 
-// Setup 1:1 mapping of page tables
+// Setup 1:1 mapping of page tables (Map whole of SPM and all of the peripherals)
 void setup_page_table(void) {
     uint64_t va, pa, addr, vpn0, vpn1, vpn2;
     
     // Map 64KB for SPM
     uint64_t spm_base = 0x10000000UL;
-    uint32_t spm_size = 0x80000;
+    uint32_t spm_size = 0x20000;
 
     vpn2 = (spm_base >> 30) & 0x1FF;
     l2_page_table[vpn2] = ((uint64_t)l1_page_table >> 12 << 10) | PTE_V;
@@ -82,9 +86,11 @@ void setup_page_table(void) {
 }
 
 
-uint64_t make_satp(void) {
+// Sets the satp to the l2_page_table
+void turn_on_mmu(void) {
     uint64_t ppn = (uint64_t)l2_page_table >> 12;
-    return SATP_MODE_SV39 | ppn;
+    uint64_t satp = SATP_MODE_SV39 | ppn;
+    asm volatile ("csrw satp, %0" :: "r"(satp));
 }
 
 
@@ -105,26 +111,9 @@ uint64_t make_satp(void) {
     })
 
 
-void _tv_move_pc_counter() {
-    // MOVE PC COUNTER
-    uintptr_t mepc, instr;
-    asm volatile("csrr %0, mepc" : "=r"(mepc));
-
-    // Load 16 bits (2 bytes) of instruction at mepc
-    instr = *(volatile uint16_t *)mepc;
-
-    // Determine instruction length
-    size_t instr_len = (instr & 0x3) == 0x3 ? 4 : 2;
-
-    // Advance mepc by instruction length
-    mepc += instr_len;
-    asm volatile("csrw mepc, %0" :: "r"(mepc));
-}
-
-
 // Machine trap vector
 void trap_vector() {
-    // Read in syscall ID immediately, before clobber
+    // Read in syscall ID immediately
     uint32_t syscall_id;
     asm volatile ("mv %0, a7" : "=r"(syscall_id));
 
@@ -145,12 +134,13 @@ void trap_vector() {
 
 
 void supervisor_main() {
-    uint64_t spm_start = 0x10006000;
+    uint64_t spm_start = 0x10006000;    // Start later, so that we don't override page table or code sections
     uint64_t spm_size = 0x1a000;
     uint64_t step = 0x1000;
 
+    // Loop through memory in PAGE_SIZE steps, to generate TLB misses
     for (uint64_t addr = spm_start; addr < spm_start + spm_size; addr += step) {
-        *((volatile uint64_t*) addr) = 0;
+        *((volatile uint64_t*) addr) = 0;   // Writing since warning about unitialized memory when reading
     }
 
     // Go out of supervisor mode
@@ -158,30 +148,44 @@ void supervisor_main() {
 }
 
 
+// Event codes for performance counters
 #define MHPM_DTLB_MISS_EVENT 4
 #define MHPM_DTLB_FILTERED_MISS_EVENT 24
+
+// Macro functions to set filtering config, for dtlb and itlb misses
+#define SET_DTLB_MISS_FILTER(base, size) do { \
+    asm volatile ("csrw 0x314, %0" :: "r"(base)); \
+    asm volatile ("csrw 0x316, %0" :: "r"(size)); \
+} while (0)
+
+#define SET_ITLB_MISS_FILTER(base, size) do { \
+    asm volatile ("csrw 0x311, %0" :: "r"(base)); \
+    asm volatile ("csrw 0x313, %0" :: "r"(size)); \
+} while (0)
+
+
+
 int main(void) {
     uint32_t rtc_freq = *reg32(&__base_regs, CHESHIRE_RTC_FREQ_REG_OFFSET);
     uint64_t reset_freq = clint_get_core_freq(rtc_freq, 2500);
     uart_init(&__base_uart, reset_freq, __BOOT_BAUDRATE);
 
-    uint64_t itlbm_start = 0x10008000, dtlbm_start = 0x10008000;
-    uint32_t itlbm_range = 0x1000, dtlbm_range = 0x5000;
-    asm volatile ("csrw 0x311, %0" :: "r"(itlbm_start));
-    asm volatile ("csrw 0x313, %0" :: "r"(itlbm_range));
-    asm volatile ("csrw 0x314, %0" :: "r"(dtlbm_start));
-    asm volatile ("csrw 0x316, %0" :: "r"(dtlbm_range));
-
+    
+    // Setup DTLB filtering config
+    SET_DTLB_MISS_FILTER(0x10008000, 0x5000);   // Addr base and size
+    
     // Setup performance counters for dtlb misses   (resetting counter and setting which event to track)
     asm volatile ("csrw mhpmcounter3, %0" :: "r"(0));
     asm volatile ("csrw mhpmevent3, %0" :: "r"(MHPM_DTLB_MISS_EVENT));
     asm volatile ("csrw mhpmcounter4, %0" :: "r"(0));
     asm volatile ("csrw mhpmevent4, %0" :: "r"(MHPM_DTLB_FILTERED_MISS_EVENT));
     
-    // Calls supervisor_main in supervisor mode
-    enter_smode();
+    // ENTER SUPERVISOR MODE
+    setup_page_table();
+    turn_on_mmu();
+    enter_smode();  // Calls supervisor_main in supervisor mode and returns after syscall_smode_exit
     
-    // Read back counter values
+    // Read back counter values for TLB misses
     uint32_t dtlb_miss_counter, dtlb_filtered_miss_counter;
     asm volatile ("csrr %0, mhpmcounter3" : "=r"(dtlb_miss_counter));
     asm volatile ("csrr %0, mhpmcounter4" : "=r"(dtlb_filtered_miss_counter));

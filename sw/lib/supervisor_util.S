@@ -44,11 +44,8 @@ enter_smode:
     sd t6, 0(sp)
     csrw mscratch, sp
 
-    // Setup page tables and mmu
-    call    setup_page_table       // Build page tables
-    call    make_satp              // Return SATP value in a0
-    csrw    satp, a0
-    sfence.vma x0, x0              // Invalidate old TLBs
+    // Invalidate old TLBs
+    sfence.vma x0, x0
 
     // Jump to supervisor mode. Once it's done, it will call ret
     mret
