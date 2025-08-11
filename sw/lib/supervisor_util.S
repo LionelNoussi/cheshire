@@ -42,9 +42,6 @@ enter_smode:
     sd t6, 0(sp)
     csrw mscratch, sp
 
-    // Invalidate old TLBs
-    sfence.vma x0, x0
-
     // Jump to supervisor mode. Once it's done, it will call ret
     mret
 
